@@ -38,7 +38,9 @@ function createMockContext() {
     getChannelProviders: vi.fn(() => [mockProvider]),
     getChannelProvider: vi.fn((id: string) => (id === "test-channel" ? mockProvider : undefined)),
     registerA2AServer: vi.fn(),
-    inject: vi.fn(async () => JSON.stringify({ url: "https://example.com/video.mp4" })),
+    inject: vi.fn(async (type: string) =>
+      type === "__confirm__" ? "yes" : JSON.stringify({ url: "https://example.com/video.mp4" }),
+    ),
     cancelInject: vi.fn(() => false),
     logMessage: vi.fn(),
     getAgentIdentity: vi.fn(async () => ({})),
@@ -227,10 +229,17 @@ describe("VideoGen /video command handler", () => {
 
   it("generates video and returns URL when prompt provided", async () => {
     const replies = await invokeVideoCommand(["a", "cat", "dancing"]);
-    // First reply is progress message
+    // First reply is progress message (after confirmation)
     expect(replies[0]).toContain("Generating video");
     // Second reply is the video URL
     expect(replies[1]).toBe("https://example.com/video.mp4");
+  });
+
+  it("cancels video generation when user declines confirmation", async () => {
+    (ctx.inject as ReturnType<typeof vi.fn>).mockResolvedValueOnce("no");
+    const replies = await invokeVideoCommand(["a", "cat", "dancing"]);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toContain("cancelled");
   });
 
   it("passes prompt and default config to ctx.inject", async () => {
@@ -240,7 +249,8 @@ describe("VideoGen /video command handler", () => {
       expect.stringContaining("video-generation"),
       expect.any(Object),
     );
-    const callArgs = (ctx.inject as ReturnType<typeof vi.fn>).mock.calls[0];
+    // call[0] is the __confirm__ call, call[1] is the __capability__ call
+    const callArgs = (ctx.inject as ReturnType<typeof vi.fn>).mock.calls[1];
     const payload = JSON.parse(callArgs[1] as string) as { capability: string; input: Record<string, unknown> };
     expect(payload.capability).toBe("video-generation");
     expect(payload.input.prompt).toBe("a dog running");
@@ -249,7 +259,8 @@ describe("VideoGen /video command handler", () => {
 
   it("parses --model flag from command args", async () => {
     await invokeVideoCommand(["a", "cat", "--model", "wan-2.1"]);
-    const callArgs = (ctx.inject as ReturnType<typeof vi.fn>).mock.calls[0];
+    // call[0] is the __confirm__ call, call[1] is the __capability__ call
+    const callArgs = (ctx.inject as ReturnType<typeof vi.fn>).mock.calls[1];
     const payload = JSON.parse(callArgs[1] as string) as { capability: string; input: Record<string, unknown> };
     expect(payload.input.model).toBe("wan-2.1");
     expect(payload.input.prompt).toBe("a cat");
@@ -257,39 +268,47 @@ describe("VideoGen /video command handler", () => {
 
   it("parses --duration flag from command args", async () => {
     await invokeVideoCommand(["a", "bird", "--duration", "10"]);
-    const callArgs = (ctx.inject as ReturnType<typeof vi.fn>).mock.calls[0];
+    // call[0] is the __confirm__ call, call[1] is the __capability__ call
+    const callArgs = (ctx.inject as ReturnType<typeof vi.fn>).mock.calls[1];
     const payload = JSON.parse(callArgs[1] as string) as { capability: string; input: Record<string, unknown> };
     expect(payload.input.duration).toBe(10);
   });
 
   it("parses --aspect flag from command args", async () => {
     await invokeVideoCommand(["a", "river", "--aspect", "9:16"]);
-    const callArgs = (ctx.inject as ReturnType<typeof vi.fn>).mock.calls[0];
+    // call[0] is the __confirm__ call, call[1] is the __capability__ call
+    const callArgs = (ctx.inject as ReturnType<typeof vi.fn>).mock.calls[1];
     const payload = JSON.parse(callArgs[1] as string) as { capability: string; input: Record<string, unknown> };
     expect(payload.input.aspectRatio).toBe("9:16");
   });
 
   it("shows friendly message on insufficient_credits error", async () => {
-    (ctx.inject as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      JSON.stringify({ error: "insufficient_credits" }),
-    );
+    // First call is confirm (returns "yes"), second call is capability (returns error)
+    (ctx.inject as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce("yes")
+      .mockResolvedValueOnce(JSON.stringify({ error: "insufficient_credits" }));
     const replies = await invokeVideoCommand(["test prompt"]);
     expect(replies[1]).toContain("credits");
   });
 
   it("handles plain-string URL response from socket", async () => {
-    (ctx.inject as ReturnType<typeof vi.fn>).mockResolvedValueOnce("https://cdn.example.com/video.mp4");
+    // First call is confirm (returns "yes"), second call is capability (returns URL)
+    (ctx.inject as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce("yes")
+      .mockResolvedValueOnce("https://cdn.example.com/video.mp4");
     const replies = await invokeVideoCommand(["test prompt"]);
     expect(replies[1]).toBe("https://cdn.example.com/video.mp4");
   });
 
   it("handles generic error from socket", async () => {
-    (ctx.inject as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
-      JSON.stringify({ error: "model_unavailable" }),
-    );
+    // First call is confirm (returns "yes"), second call is capability (returns error)
+    (ctx.inject as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce("yes")
+      .mockResolvedValueOnce(JSON.stringify({ error: "model_unavailable" }));
     const replies = await invokeVideoCommand(["test prompt"]);
     expect(replies[1]).toContain("Video generation failed");
-    expect(replies[1]).toContain("model_unavailable");
+    // Raw error details should NOT be exposed to user (error sanitization)
+    expect(replies[1]).not.toContain("model_unavailable");
   });
 });
 
@@ -325,7 +344,9 @@ describe("VideoGen A2A tools", () => {
     const tool = getTool("generate_video");
     const result = await tool.handler({ prompt: "a sunset" });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("quota_exceeded");
+    // Raw error details should NOT be exposed (error sanitization)
+    expect(result.content[0].text).toContain("Video generation failed");
+    expect(result.content[0].text).not.toContain("quota_exceeded");
   });
 
   it("list_video_models returns model list as JSON", async () => {

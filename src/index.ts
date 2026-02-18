@@ -188,6 +188,21 @@ async function handleVideoCommand(
   const duration = parsed.duration ?? config.duration ?? "5";
   const aspectRatio = parsed.aspectRatio ?? config.aspectRatio ?? "16:9";
 
+  // Credit confirmation — video generation is expensive; require explicit consent
+  const confirmation = await ctx.inject(
+    "__confirm__",
+    `This will consume credits to generate a video (approx. ${duration}s at ${aspectRatio}). Proceed? (yes/no)`,
+    {
+      from: cmdCtx.sender,
+      channel: { type: cmdCtx.channelType, id: cmdCtx.channel, name: "video-command" },
+      silent: false,
+    },
+  );
+  if (!confirmation || !["yes", "y"].includes(confirmation.trim().toLowerCase())) {
+    await cmdCtx.reply("Video generation cancelled.");
+    return;
+  }
+
   // Show progress indicator — video generation is slow (30s-2min)
   await cmdCtx.reply(
     `Generating video... This may take 30s-2min.\n` +
@@ -204,8 +219,9 @@ async function handleVideoCommand(
       input: {
         prompt: parsed.prompt,
         model,
-        duration: Number.parseInt(duration, 10),
+        duration: Number(duration),
         aspectRatio,
+        ...(config.apiKey ? { apiKey: config.apiKey } : {}),
       },
     });
 
@@ -221,7 +237,8 @@ async function handleVideoCommand(
       if (result.error === "insufficient_credits") {
         await cmdCtx.reply("You don't have enough credits for video generation. Add credits to continue.");
       } else {
-        await cmdCtx.reply(`Video generation failed: ${result.error}`);
+        ctx.log.error("Video generation API error", result.error);
+        await cmdCtx.reply("Video generation failed. Please try again.");
       }
       return;
     }
@@ -233,7 +250,7 @@ async function handleVideoCommand(
     }
   } catch (err) {
     ctx.log.error("Video generation failed", err);
-    await cmdCtx.reply(`Video generation failed: ${err}`);
+    await cmdCtx.reply("Video generation failed. Please try again.");
   }
 }
 
@@ -296,7 +313,9 @@ const plugin: WOPRPlugin = {
             name: "generate_video",
             description:
               "Generate a video from a text prompt. Returns a URL to the generated video. " +
-              "Video generation takes 30s-2min. The socket layer handles credit checks automatically.",
+              "Video generation takes 30s-2min. Credit checks are enforced by the socket layer — " +
+              "no interactive confirmation is required from the caller; ensure the user has consented " +
+              "before invoking this tool.",
             inputSchema: {
               type: "object",
               properties: {
@@ -330,29 +349,42 @@ const plugin: WOPRPlugin = {
 
               const prompt = args.prompt as string;
               const model = (args.model as string | undefined) ?? config?.model ?? "minimax-video";
-              const duration = (args.duration as number | undefined) ?? Number.parseInt(config?.duration ?? "5", 10);
+              const duration = (args.duration as number | undefined) ?? Number(config?.duration ?? "5");
               const aspectRatio = (args.aspectRatio as string | undefined) ?? config?.aspectRatio ?? "16:9";
 
+              // A2A callers are AI agents acting on behalf of users who have already consented
+              // at the orchestration level (e.g. the human approved the agent task). There is no
+              // interactive user present to respond to a __confirm__ prompt, so we skip that step
+              // here. The socket layer still enforces credit checks and will return
+              // "insufficient_credits" if the account cannot cover the cost.
               try {
                 const capabilityRequest = JSON.stringify({
                   capability: "video-generation",
-                  input: { prompt, model, duration, aspectRatio },
+                  input: {
+                    prompt,
+                    model,
+                    duration,
+                    aspectRatio,
+                    ...(config?.apiKey ? { apiKey: config.apiKey } : {}),
+                  },
                 });
 
                 const raw = await pluginCtx.inject("__capability__", capabilityRequest, { silent: true });
                 const result = parseSocketResponse(raw);
 
                 if (result.error) {
+                  pluginCtx.log.error("Video generation API error", result.error);
                   return {
-                    content: [{ type: "text", text: `Video generation failed: ${result.error}` }],
+                    content: [{ type: "text", text: "Video generation failed. Please try again." }],
                     isError: true,
                   };
                 }
 
                 return { content: [{ type: "text", text: result.url ?? "No URL returned" }] };
               } catch (err) {
+                pluginCtx.log.error("Video generation error", err);
                 return {
-                  content: [{ type: "text", text: `Video generation error: ${err}` }],
+                  content: [{ type: "text", text: "Video generation failed. Please try again." }],
                   isError: true,
                 };
               }
