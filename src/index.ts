@@ -313,7 +313,9 @@ const plugin: WOPRPlugin = {
             name: "generate_video",
             description:
               "Generate a video from a text prompt. Returns a URL to the generated video. " +
-              "Video generation takes 30s-2min. The socket layer handles credit checks automatically.",
+              "Video generation takes 30s-2min. Credit checks are enforced by the socket layer — " +
+              "no interactive confirmation is required from the caller; ensure the user has consented " +
+              "before invoking this tool.",
             inputSchema: {
               type: "object",
               properties: {
@@ -350,6 +352,11 @@ const plugin: WOPRPlugin = {
               const duration = (args.duration as number | undefined) ?? Number(config?.duration ?? "5");
               const aspectRatio = (args.aspectRatio as string | undefined) ?? config?.aspectRatio ?? "16:9";
 
+              // A2A callers are AI agents acting on behalf of users who have already consented
+              // at the orchestration level (e.g. the human approved the agent task). There is no
+              // interactive user present to respond to a __confirm__ prompt, so we skip that step
+              // here. The socket layer still enforces credit checks and will return
+              // "insufficient_credits" if the account cannot cover the cost.
               try {
                 const capabilityRequest = JSON.stringify({
                   capability: "video-generation",
