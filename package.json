@@ -1,7 +1,7 @@
 {
   "name": "@wopr-network/wopr-plugin-videogen",
   "version": "1.0.0",
-  "description": "Video generation capability plugin for WOPR — /video in any channel",
+  "description": "Video generation capability plugin for WOPR \u2014 /video in any channel",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
@@ -16,7 +16,13 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
-  "keywords": ["wopr", "plugin", "videogen", "video", "ai"],
+  "keywords": [
+    "wopr",
+    "plugin",
+    "videogen",
+    "video",
+    "ai"
+  ],
   "author": "WOPR",
   "license": "MIT",
   "dependencies": {
@@ -27,8 +33,14 @@
     "@biomejs/biome": "^2.3.15",
     "@types/node": "^25.0.0",
     "typescript": "^5.3.0",
-    "vitest": "^4.0.0"
+    "vitest": "^4.0.0",
+    "semantic-release": "^24.0.0",
+    "@wopr-network/semantic-release-config": "^1.0.0"
   },
-  "publishConfig": { "access": "public" },
-  "files": ["dist"]
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist"
+  ]
 }
