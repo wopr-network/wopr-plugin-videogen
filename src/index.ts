@@ -70,6 +70,8 @@ const configSchema: ConfigSchema = {
       label: "API Key (BYOK)",
       placeholder: "r8_...",
       description: "Your own API key for the provider (optional — uses hosted credits if empty)",
+      secret: true,
+      setupFlow: "paste",
     },
   ],
 };
@@ -248,8 +250,8 @@ async function handleVideoCommand(
     } else {
       await cmdCtx.reply("Video generation completed but no URL was returned.");
     }
-  } catch (err) {
-    ctx.log.error("Video generation failed", err);
+  } catch (error: unknown) {
+    ctx.log.error("Video generation failed", error);
     await cmdCtx.reply("Video generation failed. Please try again.");
   }
 }
@@ -260,6 +262,7 @@ async function handleVideoCommand(
 
 let pluginCtx: WOPRPluginContext | null = null;
 const registeredProviderIds: string[] = [];
+const cleanups: Array<() => void> = [];
 
 const plugin: WOPRPlugin = {
   name: "@wopr-network/wopr-plugin-videogen",
@@ -283,7 +286,6 @@ const plugin: WOPRPlugin = {
           type: "video-generation",
           id: "videogen-replicate",
           displayName: "Video Generation (Replicate)",
-          tier: "byok",
         },
       ],
     },
@@ -294,6 +296,7 @@ const plugin: WOPRPlugin = {
       shutdownBehavior: "drain",
       shutdownTimeoutMs: 120_000, // video gen can take up to 2 minutes
     },
+    configSchema,
   },
 
   async init(ctx: WOPRPluginContext) {
@@ -302,6 +305,12 @@ const plugin: WOPRPlugin = {
     // 1. Register config schema
     ctx.registerConfigSchema("wopr-plugin-videogen", configSchema);
     const config = ctx.getConfig<VideoGenConfig>();
+
+    // 1b. Register capability provider
+    ctx.registerCapabilityProvider("video-generation", {
+      id: "videogen-replicate",
+      name: "Video Generation (Replicate)",
+    });
 
     // 2. Register A2A tools for AI agents
     if (ctx.registerA2AServer) {
@@ -381,8 +390,8 @@ const plugin: WOPRPlugin = {
                 }
 
                 return { content: [{ type: "text", text: result.url ?? "No URL returned" }] };
-              } catch (err) {
-                pluginCtx.log.error("Video generation error", err);
+              } catch (error: unknown) {
+                pluginCtx.log.error("Video generation error", error);
                 return {
                   content: [{ type: "text", text: "Video generation failed. Please try again." }],
                   isError: true,
@@ -458,8 +467,8 @@ const plugin: WOPRPlugin = {
     }
 
     // 4. Listen for new channel providers coming online and register /video on them too
-    // Uses wildcard "*" event to catch custom "capability:providerRegistered" events
-    ctx.events.on("*", async (payload) => {
+    // Uses wildcard "*" event to catch late-joining channel providers
+    const unsubProviderEvent = ctx.events.on("*", async (payload) => {
       const event = payload as { type?: string } | undefined;
       if (!pluginCtx || event?.type !== "capability:providerRegistered") return;
       const providers = pluginCtx.getChannelProviders();
@@ -479,21 +488,33 @@ const plugin: WOPRPlugin = {
         }
       }
     });
+    cleanups.push(unsubProviderEvent);
 
     ctx.log.info("VideoGen plugin initialized");
   },
 
   async shutdown() {
+    if (!pluginCtx) return; // idempotent guard
+
+    // Run all cleanup functions (event listeners, etc.)
+    for (const fn of cleanups) fn();
+    cleanups.length = 0;
+
     // Unregister /video command from all channel providers
-    if (pluginCtx) {
-      for (const providerId of registeredProviderIds) {
-        const provider = pluginCtx.getChannelProvider(providerId);
-        if (provider) {
-          provider.unregisterCommand("video");
-        }
+    for (const providerId of registeredProviderIds) {
+      const provider = pluginCtx.getChannelProvider(providerId);
+      if (provider) {
+        provider.unregisterCommand("video");
       }
     }
     registeredProviderIds.length = 0;
+
+    // Unregister capability provider
+    pluginCtx.unregisterCapabilityProvider("video-generation", "videogen-replicate");
+
+    // Unregister config schema
+    pluginCtx.unregisterConfigSchema("wopr-plugin-videogen");
+
     pluginCtx = null;
   },
 };
