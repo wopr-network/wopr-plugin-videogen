@@ -86,14 +86,14 @@ function createMockContext() {
     registerUiComponent: vi.fn(),
     unregisterUiComponent: vi.fn(),
     getUiComponents: vi.fn(() => []),
-    registerLLMProvider: vi.fn(),
-    unregisterLLMProvider: vi.fn(),
+    registerProvider: vi.fn(),
+    unregisterProvider: vi.fn(),
     getProvider: vi.fn(),
-    registerSTTProvider: vi.fn(),
-    registerTTSProvider: vi.fn(),
-    getSTT: vi.fn(),
-    getTTS: vi.fn(),
-    hasVoice: vi.fn(() => ({ stt: false, tts: false })),
+    registerCapabilityProvider: vi.fn(),
+    unregisterCapabilityProvider: vi.fn(),
+    getCapabilityProviders: vi.fn(() => []),
+    hasCapability: vi.fn(() => false),
+    registerHealthProbe: vi.fn(),
     registerChannelProvider: vi.fn(),
     unregisterChannelProvider: vi.fn(),
     getPluginDir: vi.fn(() => "/tmp/test"),
@@ -112,17 +112,29 @@ describe("VideoGen Plugin", () => {
     expect(typeof (plugin as WOPRPlugin).shutdown).toBe("function");
   });
 
-  it("has a valid manifest", async () => {
+  it("has a valid manifest with configSchema and no tier field", async () => {
     const { default: plugin } = await import("../src/index.js");
     const p = plugin as WOPRPlugin;
     expect(p.manifest).toBeDefined();
     expect(p.manifest!.capabilities).toContain("video-generation");
     expect(p.manifest!.category).toBe("creative");
+    expect(p.manifest!.configSchema).toBeDefined();
+    expect(p.manifest!.configSchema!.fields.length).toBeGreaterThan(0);
     expect(p.manifest!.provides?.capabilities).toHaveLength(1);
     expect(p.manifest!.provides?.capabilities[0].type).toBe("video-generation");
-    expect(p.manifest!.provides?.capabilities[0].tier).toBe("byok");
+    // tier was removed in plugin-types 0.5.0
+    expect((p.manifest!.provides?.capabilities[0] as Record<string, unknown>).tier).toBeUndefined();
     expect(p.manifest!.lifecycle?.shutdownBehavior).toBe("drain");
     expect(p.manifest!.lifecycle?.shutdownTimeoutMs).toBe(120_000);
+  });
+
+  it("apiKey config field has secret and setupFlow", async () => {
+    const { default: plugin } = await import("../src/index.js");
+    const p = plugin as WOPRPlugin;
+    const apiKeyField = p.manifest!.configSchema!.fields.find((f) => f.name === "apiKey");
+    expect(apiKeyField).toBeDefined();
+    expect(apiKeyField!.secret).toBe(true);
+    expect(apiKeyField!.setupFlow).toBe("paste");
   });
 
   it("registers config schema on init", async () => {
@@ -170,6 +182,45 @@ describe("VideoGen Plugin", () => {
     await p.init!(ctx);
     await p.shutdown!();
     expect(mockProvider.unregisterCommand).toHaveBeenCalledWith("video");
+  });
+
+  it("registers capability provider on init", async () => {
+    const { default: plugin } = await import("../src/index.js");
+    const p = plugin as WOPRPlugin;
+    const { ctx } = createMockContext();
+    await p.init!(ctx);
+    expect(ctx.registerCapabilityProvider).toHaveBeenCalledWith("video-generation", {
+      id: "videogen-replicate",
+      name: "Video Generation (Replicate)",
+    });
+    await p.shutdown!();
+  });
+
+  it("unregisters capability provider on shutdown", async () => {
+    const { default: plugin } = await import("../src/index.js");
+    const p = plugin as WOPRPlugin;
+    const { ctx } = createMockContext();
+    await p.init!(ctx);
+    await p.shutdown!();
+    expect(ctx.unregisterCapabilityProvider).toHaveBeenCalledWith("video-generation", "videogen-replicate");
+  });
+
+  it("unregisters config schema on shutdown", async () => {
+    const { default: plugin } = await import("../src/index.js");
+    const p = plugin as WOPRPlugin;
+    const { ctx } = createMockContext();
+    await p.init!(ctx);
+    await p.shutdown!();
+    expect(ctx.unregisterConfigSchema).toHaveBeenCalledWith("wopr-plugin-videogen");
+  });
+
+  it("shutdown is idempotent", async () => {
+    const { default: plugin } = await import("../src/index.js");
+    const p = plugin as WOPRPlugin;
+    const { ctx } = createMockContext();
+    await p.init!(ctx);
+    await p.shutdown!();
+    await p.shutdown!(); // second call should not throw
   });
 });
 
